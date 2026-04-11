@@ -249,18 +249,116 @@ end
 disp('--- All stations successfully demodulated and saved! ---');
 
 
-% info1 = audioinfo('Short_FM9090.wav');
-% info2 = audioinfo('Short_BBCArabicarrier2.wav');
-%
-% n_samples1 = info1.TotalSamples;
-% n_channels1 = info1.NumChannels;
-%
-% n_samples2 = info2.TotalSamples;
-% n_channels2 = info2.NumChannels;
-%
-% disp(n_samples1)
-% disp(n_channels1)
-%
-% disp(n_samples2)
-% disp(n_channels2)
-% this was just for testing ,,,(n_samples1=697536, n_samples2=740544 so we had to zeropad at the end of the shorter one)
+
+
+
+%% --- Discussion Question 4: Removing the RF BPF ---
+disp('--- Simulating Receiver WITHOUT RF BPF (Targeting Station 1) ---');
+
+F_target_noRF = F0; % We want to listen to Station 1 (100 kHz)
+F_osc_noRF = F_target_noRF + F_IF; % Oscillator is at 115 kHz
+
+% 1. BYPASS THE RF STAGE: Feed fdm_signal directly into the Mixer
+osc_signal_noRF = cos(2 * pi * F_osc_noRF * t);
+mixer_output_noRF = fdm_signal .* osc_signal_noRF; % <-- Notice we used fdm_signal here!
+
+% 2. Apply IF Filter (Centered at 15 kHz)
+f_low_IF = F_IF - BW1 * 1.05;
+f_high_IF = F_IF + BW1 * 1.05;
+if_specs_noRF = fdesign.bandpass('N,F3dB1,F3dB2', filter_order, f_low_IF, f_high_IF, Fs_new);
+if_filter_noRF = design(if_specs_noRF, 'butter');
+if_output_noRF = filter(if_filter_noRF, mixer_output_noRF);
+
+% Plot IF Spectrum to show the collision
+figure;
+plot(f_axis, abs(fftshift(fft(if_output_noRF))));
+title('IF Output Spectrum WITHOUT RF Filter (Notice the Overlap!)');
+xlabel('Frequency (Hz)'); ylabel('Magnitude'); xlim([-50000 50000]); grid on;
+
+% 3. Baseband Mixing
+baseband_carrier_noRF = cos(2 * pi * F_IF * t);
+baseband_mixed_noRF = if_output_noRF .* baseband_carrier_noRF;
+
+% 4. Apply Low-Pass Filter
+lpf_specs_noRF = fdesign.lowpass('N,F3dB', filter_order, BW1 * 1.05, Fs_new);
+lpf_filter_noRF = design(lpf_specs_noRF, 'butter');
+demod_signal_noRF = filter(lpf_filter_noRF, baseband_mixed_noRF);
+
+% Plot Final Baseband Spectrum to show the corrupted audio
+figure;
+plot(f_axis, abs(fftshift(fft(demod_signal_noRF))));
+title('Final Baseband Spectrum WITHOUT RF Filter (Corrupted Audio)');
+xlabel('Frequency (Hz)'); ylabel('Magnitude'); xlim([-20000 20000]); grid on;
+
+% 5. Audio Playback and Saving
+final_audio_noRF = downsample(demod_signal_noRF, interp_factor);
+normalized_audio_noRF = final_audio_noRF / max(abs(final_audio_noRF));
+
+audiowrite('Demodulated_No_RF_Filter.wav', normalized_audio_noRF, Fs);
+disp('Saved corrupted audio as: Demodulated_No_RF_Filter.wav');
+
+% Play the corrupted audio so you can hear the problem
+disp('Playing corrupted audio (listen for both stations overlapping)...');
+sound(normalized_audio_noRF, Fs);
+
+%% --- Discussion Question 5: Oscillator Frequency Offset ---
+disp('--- Simulating Oscillator Offsets (0.1 kHz and 1 kHz) ---');
+
+offsets = [100, 1000]; % 0.1 kHz and 1 kHz in Hz
+
+for k = 1:length(offsets)
+    freq_offset = offsets(k);
+    disp(['Testing LO Offset: ', num2str(freq_offset), ' Hz']);
+
+    % 1. RF Stage (Normal)
+    F_target_off = F0;
+    rf_specs_off = fdesign.bandpass('N,F3dB1,F3dB2', filter_order, F_target_off - BW1*1.05, F_target_off + BW1*1.05, Fs_new);
+    rf_filter_off = design(rf_specs_off, 'butter');
+    rf_output_off = filter(rf_filter_off, fdm_signal);
+
+    % 2. Mixer with BROKEN/OFFSET Oscillator
+    % This is where the error is introduced
+    F_osc_off = F_target_off + F_IF + freq_offset;
+    osc_signal_off = cos(2 * pi * F_osc_off * t);
+    mixer_output_off = rf_output_off .* osc_signal_off;
+
+    % 3. IF Filter (Normal, still expecting 15 kHz)
+    if_specs_off = fdesign.bandpass('N,F3dB1,F3dB2', filter_order, F_IF - BW1*1.05, F_IF + BW1*1.05, Fs_new);
+    if_filter_off = design(if_specs_off, 'butter');
+    if_output_off = filter(if_filter_off, mixer_output_off);
+
+    % Plot the shifted IF Spectrum
+    figure;
+    plot(f_axis, abs(fftshift(fft(if_output_off))));
+    title(['IF Spectrum with ', num2str(freq_offset), ' Hz LO Offset']);
+    xlabel('Frequency (Hz)'); ylabel('Magnitude'); xlim([-50000 50000]); grid on;
+
+    % 4. Baseband Mixing (Normal, using ideal 15 kHz carrier to bring it down)
+    baseband_carrier_off = cos(2 * pi * F_IF * t);
+    baseband_mixed_off = if_output_off .* baseband_carrier_off;
+
+    % 5. Low-Pass Filter
+    lpf_specs_off = fdesign.lowpass('N,F3dB', filter_order, BW1*1.05, Fs_new);
+    lpf_filter_off = design(lpf_specs_off, 'butter');
+    demod_signal_off = filter(lpf_filter_off, baseband_mixed_off);
+
+    % Plot Final Baseband Spectrum
+    figure;
+    plot(f_axis, abs(fftshift(fft(demod_signal_off))));
+    title(['Final Baseband Spectrum with ', num2str(freq_offset), ' Hz LO Offset']);
+    xlabel('Frequency (Hz)'); ylabel('Magnitude'); xlim([-20000 20000]); grid on;
+
+    % 6. Playback & Save
+    final_audio_off = downsample(demod_signal_off, interp_factor);
+    normalized_audio_off = final_audio_off / max(abs(final_audio_off));
+
+    filename = ['Demodulated_Offset_', num2str(freq_offset), 'Hz.wav'];
+    audiowrite(filename, normalized_audio_off, Fs);
+
+    disp(['Playing audio with ', num2str(freq_offset), ' Hz offset... listen closely!']);
+    sound(normalized_audio_off, Fs);
+    pause(10); % Pause so you can hear the strange voices
+end
+
+
+
